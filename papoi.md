@@ -111,6 +111,7 @@ Vestido; Tidopoi
 Gordo; godopoi
 Gracioso; funipoi; funny
 Pelotudo; tudopoi
+cafe; cofipoi
 
 
 ## ejemplos: Oraciones Típicas (aplicando formato general) aunque no es estricto
