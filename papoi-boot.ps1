@@ -4,7 +4,7 @@
 # Despues: papoi golpe | papoi -Add "golpe; pucopoi" | papoi -DestList | papoi -Help
 function global:papoi {
     param(
-        [string]$Add,
+        [switch]$Add,
         [string]$Del,
         [string]$Edit,
         [Parameter(Position = 0)]

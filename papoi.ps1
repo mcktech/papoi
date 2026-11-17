@@ -5,12 +5,14 @@
 .EXAMPLE
     .\papoi-edit.ps1 -Add "golpe; pucopoi"
     .\papoi-edit.ps1 -Add "golpe=pucopoi / pucapoi"
+    .\papoi-edit.ps1 -Add            (sin texto: pide los campos uno a uno)
+    .\papoi-edit.ps1 -Add "golpe"    (palabra sola: 1ra columna dada, pide el resto)
     .\papoi-edit.ps1 -Query "golpe"
     .\papoi-edit.ps1 -Edit "pucopoi" -Dest ejemplos
     .\papoi-edit.ps1 -DestList
 #>
 param(
-    [string]$Add,
+    [switch]$Add,
     [string]$Del,
     [string]$Edit,
     [Parameter(Position = 0)]
@@ -107,6 +109,8 @@ function Show-Help {
     Hl '-Add "esp; papoi"'   'Agrega al final de la seccion. Si hay coincidencias las lista; si el registro existe ofrece sobrescribir (diff + / -)'
     Hl ''                    'Acepta ";" "=" o ":" como separador. 3er dato opcional ("esp; papoi; origen"); los datos vacios al final no se guardan'
     Hl ''                    '"golpe=pucopoi / pucapoi" crea 2 registros (se divide el 2do campo por "/")'
+    Hl '-Add'                'Sin texto: pide los campos uno a uno (como -Edit) y chequea si ya existe cada dato al confirmarlo'
+    Hl '-Add "palabra"'      'Palabra sola (sin ; = :): la toma como 1ra columna, la chequea y pide el resto desde la 2da'
     Hl '-Del "texto"'        'Busca (esp o papoi, parcial) y borra la linea completa, con confirmacion'
     Hl '-Edit "texto"'       'Busca (esp o papoi, parcial) y edita los campos interactivamente'
     Hl '-Query "texto"'      'Busca en TODAS las secciones (o solo en -Dest si se indica) y lista <español> = <papoiongo>. Atajo: papoi-edit texto'
@@ -122,19 +126,20 @@ function Show-Help {
 }
 
 $cmds = @()
-if ($PSBoundParameters.ContainsKey('Add'))    { $cmds += 'Add' }
+if ($Add.IsPresent)                           { $cmds += 'Add' }
 if ($PSBoundParameters.ContainsKey('Del'))    { $cmds += 'Del' }
 if ($PSBoundParameters.ContainsKey('Edit'))   { $cmds += 'Edit' }
-if ($PSBoundParameters.ContainsKey('Query'))  { $cmds += 'Query' }
+if ($PSBoundParameters.ContainsKey('Query') -and -not $Add.IsPresent) { $cmds += 'Query' }
 if ($DestList.IsPresent)                      { $cmds += 'DestList' }
 
 if ($Help -or $cmds.Count -eq 0) { Show-Help; return }
 if ($cmds.Count -gt 1) { Write-Host "Solo un comando a la vez (se indicaron: $($cmds -join ', '))." -ForegroundColor $ColError; return }
 $cmd = $cmds[0]
 if ($cmd -ne 'DestList') {
-    $arg = switch ($cmd) { 'Add' { $Add } 'Del' { $Del } 'Edit' { $Edit } 'Query' { $Query } }
-    if ([string]::IsNullOrWhiteSpace($arg)) { Write-Host "-$cmd necesita un texto." -ForegroundColor $ColError; return }
-    $arg = $arg.Trim()
+    # -Add es switch: el texto (si hay) llega por posicion en $Query. Sin texto = modo interactivo
+    $arg = switch ($cmd) { 'Add' { $Query } 'Del' { $Del } 'Edit' { $Edit } 'Query' { $Query } }
+    if ($cmd -ne 'Add' -and [string]::IsNullOrWhiteSpace($arg)) { Write-Host "-$cmd necesita un texto." -ForegroundColor $ColError; return }
+    $arg = if ($null -eq $arg) { '' } else { $arg.Trim() }
 }
 
 $remoto = -not $PSBoundParameters.ContainsKey('File')
@@ -373,7 +378,7 @@ function Save-Remote {
     if ($endsNL) { $t += $nl }
     $enc = [System.Text.UTF8Encoding]::new($hasBom)
     $bytes = [byte[]]($enc.GetPreamble() + $enc.GetBytes($t))
-    $msg = "papoi: -$cmd $arg"
+    $msg = ("papoi: -$cmd $arg").Trim()
     if ($msg.Length -gt 100) { $msg = $msg.Substring(0, 100) }
     $json = @{ message = $msg; content = [Convert]::ToBase64String($bytes); sha = $GhSha; branch = $GhBranch } | ConvertTo-Json
     try {
@@ -679,6 +684,123 @@ function Split-AddInput([string]$s, $sec) {
     return , $out
 }
 
+# ---------- -Add interactivo ----------
+function Test-HasSep([string]$s, $sec) {
+    # Mismo criterio que Split-AddInput: el texto trae algun separador (; = :)
+    foreach ($ch in (@($sec.Sep) + ';', '=', ':')) { if ($ch -and $s.Contains($ch)) { return $true } }
+    return $false
+}
+
+function Write-HitLine($r, [string]$suf) {
+    Write-Host '  * ' -ForegroundColor $ColAviso -NoNewline
+    Write-Host ('(l.{0}) ' -f ($r.Idx + 1)) -ForegroundColor $ColListaLinea -NoNewline
+    Write-Host $r.Raw -ForegroundColor $ColCoincidencia -NoNewline
+    Write-Host $suf -ForegroundColor $ColAviso
+}
+
+function Show-AddChecks($sec, $vals, [int]$upto) {
+    # Existencia de los datos ya confirmados (columnas 0..$upto-1). Solo informa; max 6 lineas por bloque
+    $max = 6
+    if ($upto -ge 1 -and $vals[0] -ne '') {
+        $h = @($sec.Rows | Where-Object { Test-Sub $_.F[0] $vals[0] })
+        if ($h.Count -gt 0) {
+            Write-Host "  --Coincidencias en $($sec.Cols[0]):" -ForegroundColor $ColAviso
+            foreach ($r in ($h | Select-Object -First $max)) {
+                $suf = if (Test-Cell $r.F[0] $vals[0]) { '' } else { '  ~parcial' }
+                Write-HitLine $r $suf
+            }
+            if ($h.Count -gt $max) { Write-Host "  ... (+$($h.Count - $max) mas)" -ForegroundColor $ColSecundario }
+        }
+    }
+    if ($sec.Cols.Count -ge 2 -and $upto -ge 2 -and $vals[1] -ne '') {
+        foreach ($v in @($vals[1] -split '/' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            $h = @($sec.Rows | Where-Object { Test-Sub $_.F[1] $v })
+            if ($h.Count -gt 0) {
+                Write-Host "  --Coincidencias en $($sec.Cols[1]) '${v}':" -ForegroundColor $ColAviso
+                foreach ($r in ($h | Select-Object -First $max)) {
+                    $suf = ''
+                    if (-not (Test-Cell $r.F[1] $v)) { $suf = '  ~parcial' }
+                    elseif ((Test-Cell $r.F[0] $vals[0] -Strict) -and (Test-Cell $r.F[1] $v -Strict)) { $suf = '  <= ya existe' }
+                    Write-HitLine $r $suf
+                }
+                if ($h.Count -gt $max) { Write-Host "  ... (+$($h.Count - $max) mas)" -ForegroundColor $ColSecundario }
+            }
+            $occ = Find-Occurrences $sec $v
+            if ($occ.Count -gt 0) {
+                Write-Host "  --Aparece en otras secciones '${v}':" -ForegroundColor $ColAviso
+                foreach ($o in ($occ | Select-Object -First $max)) {
+                    Write-Host '  * ' -ForegroundColor $ColAviso -NoNewline
+                    Write-Host "[$($o.Sec)] " -ForegroundColor $ColTitulo -NoNewline
+                    Write-Host ('(l.{0}) ' -f ($o.Idx + 1)) -ForegroundColor $ColListaLinea -NoNewline
+                    Write-Host $o.Raw -ForegroundColor $ColCoincidencia
+                }
+                if ($occ.Count -gt $max) { Write-Host "  ... (+$($occ.Count - $max) mas)" -ForegroundColor $ColSecundario }
+            }
+        }
+    }
+}
+
+function Read-AddInteractive($sec, [string]$first) {
+    # Pide los campos de a uno (como -Edit) y devuelve la linea "esp; papoi; ..." para Split-AddInput, o $null si se cancela.
+    # $first = 1ra columna ya dada: arranca por la 2da. Obligatorias: las 2 primeras columnas (1 si la seccion tiene una sola)
+    $n = $sec.Cols.Count
+    $req = [Math]::Min(2, $n)
+    $sepCh = if ($sec.Sep) { $sec.Sep } else { ';' }
+    $vals = @(1..$n | ForEach-Object { '' })
+    $i = 0
+    if ($first) { $vals[0] = $first; $i = 1 }
+    $err = ''
+    while ($true) {
+        if ($i -ge $n) {
+            $line = Join-Row $vals $sec
+            Write-Host ''
+            Show-Diff '' $line
+            Write-Host ''
+            Write-Prompt 'Agregar?' 'Arriba=volver'
+            $t = Read-Tecla $TIMEOUT_S 'N'
+            if ($t -eq 'Enter') { return $line }
+            elseif ($t -eq 'UpArrow') { $i = $n - 1; continue }
+            else { return $null }
+        }
+        Clear-Host
+        Write-Host 'papoi -Add' -ForegroundColor $ColTitulo -NoNewline
+        Write-Host "  [$($sec.Name)]" -ForegroundColor $ColSecundario
+        Write-Host 'Enter=acepta  Izq/Der=cursor  Arriba=anterior  Ctrl+S=guardar ya  Esc=cancelar' -ForegroundColor $ColEditAyuda
+        Write-Host ''
+        for ($k = 0; $k -lt $i; $k++) {
+            Write-Host ('  {0}: ' -f $sec.Cols[$k]) -ForegroundColor $ColEditEtiqueta -NoNewline
+            Write-Host $vals[$k] -ForegroundColor $ColEditValor
+        }
+        Show-AddChecks $sec $vals $i
+        Write-Host ''
+        if ($err) { Write-Host $err -ForegroundColor $ColError; $err = '' }
+        $opt = if ($i -ge $req) { '  (opcional)' } else { '' }
+        Write-Host ('[{0}/{1}] {2}:{3}' -f ($i + 1), $n, $sec.Cols[$i], $opt) -ForegroundColor $ColEditCampo
+        Write-Host ''
+        Write-Host 'agregar: ' -ForegroundColor $ColEditPrompt -NoNewline
+        $r = Read-Field $vals[$i]
+        $b = $r.Buf.Replace($sepCh, ',').Trim()
+        switch ($r.Key) {
+            'Enter' {
+                if ($i -lt $req -and $b -eq '') { $err = "Falta: $($sec.Cols[$i])" }
+                else { $vals[$i] = $b; $i++ }
+            }
+            'Up'    { $vals[$i] = $b; if ($i -gt 0) { $i-- } }
+            'CtrlS' {
+                $vals[$i] = $b
+                $miss = -1
+                for ($k = 0; $k -lt $req; $k++) { if ($vals[$k] -eq '') { $miss = $k; break } }
+                if ($miss -ge 0) { $err = "Faltan datos obligatorios: $($sec.Cols[$miss])"; $i = $miss }
+                else { $i = $n }
+            }
+            'Esc'   {
+                Write-Host ''
+                if (Confirm-Enter 'Cancelar?') { return $null }
+            }
+        }
+    }
+}
+
 # ================= Comandos =================
 $changed = $false
 
@@ -776,6 +898,12 @@ switch ($cmd) {
     'Add' {
         $sec = Find-Section $Dest
         if (-not $sec) { break }
+        # Interactivo: sin texto, o palabra sola (sin separador) en una seccion con columnas. $arg pasa a ser la linea armada
+        $interactivo = ($arg -eq '') -or ($sec.Cols.Count -ge 2 -and -not (Test-HasSep $arg $sec))
+        if ($interactivo) {
+            $arg = Read-AddInteractive $sec $arg
+            if ($null -eq $arg) { Write-Host 'Cancelado.' -ForegroundColor $ColCancelado; break }
+        }
         $recs = Split-AddInput $arg $sec
         if (-not $recs) { break }
         $snap = $sec.Rows   # coincidencias se evaluan contra lo que habia al empezar
@@ -790,7 +918,7 @@ switch ($cmd) {
             $hits = @($snap | Where-Object { (Test-Sub $_.F[0] $esp) -or ($pap -ne '' -and (Test-Sub $_.F[1] $pap)) })
             $exact = @($hits | Where-Object { (Test-Cell $_.F[0] $esp -Strict) -and ($pap -eq '' -or (Test-Cell $_.F[1] $pap -Strict)) })
             $full = @($hits | Where-Object { (Test-Cell $_.F[0] $esp) -or ($pap -ne '' -and (Test-Cell $_.F[1] $pap)) })
-            if ($hits.Count -gt 0) {
+            if ($hits.Count -gt 0 -and -not $interactivo) {
                 Write-Host '--Coincidencias:' -ForegroundColor $ColAviso
                 foreach ($h in $hits) {
                     $parcial = ($full -notcontains $h)
@@ -800,7 +928,7 @@ switch ($cmd) {
                     if ($parcial) { Write-Host '  ~parcial' -ForegroundColor $ColAviso }
                 }
             }
-            if ($pap -ne '' -and $sec.Cols.Count -ge 2) {
+            if ($pap -ne '' -and $sec.Cols.Count -ge 2 -and -not $interactivo) {
                 $occ = Find-Occurrences $sec $pap
                 if ($occ.Count -gt 0) {
                     Write-Host '--Aparece en otras secciones:' -ForegroundColor $ColAviso
@@ -831,7 +959,7 @@ switch ($cmd) {
                     }
                 } else { Write-Host 'Omitido.' -ForegroundColor $ColSecundario }
             } else {
-                if ($full.Count -gt 0 -and -not (Confirm-Enter 'Agregar igual?')) { Write-Host 'Omitido.' -ForegroundColor $ColSecundario; Write-Host ''; continue }
+                if ($full.Count -gt 0 -and -not $interactivo -and -not (Confirm-Enter 'Agregar igual?')) { Write-Host 'Omitido.' -ForegroundColor $ColSecundario; Write-Host ''; continue }
                 $cur = Find-Section $Dest
                 $L.Insert($cur.Last + 1, $line)
                 Write-Host "+ $line" -ForegroundColor $ColDiffAgrega
