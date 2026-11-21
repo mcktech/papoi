@@ -114,6 +114,7 @@ Pelotudo; tudopoi
 cafe; cofipoi
 bailar; dacipoi
 Culo; culopoi
+Tarado; taropoi; Ta(ra)do
 
 
 ## ejemplos: Oraciones Típicas (aplicando formato general) aunque no es estricto
