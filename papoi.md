@@ -113,6 +113,7 @@ Gracioso; funipoi; funny
 Pelotudo; tudopoi
 cafe; cofipoi
 bailar; dacipoi
+Culo; culopoi
 
 
 ## ejemplos: Oraciones Típicas (aplicando formato general) aunque no es estricto
