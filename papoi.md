@@ -147,6 +147,8 @@ Estas triste?; titepapoi?
 Estoy contento!!; yupipoi!
 Gordo gracioso!; godofunipapoi
 Miralo al pelotudo; vedopoi tudopapoi
+sos tarado, tonto; taropoi papoi
+sos tarado, tonto; taropapoi
 
 ## Conjugaciones comunes
 
